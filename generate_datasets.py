@@ -11,6 +11,7 @@ import argparse
 from datetime import datetime
 import pandas as pd
 
+
 def generate_all_datasets(start_date="2024-10-01", end_date="2024-12-31", output_dir="data/raw", 
                         processed_dir="data/processed", hourly_rate=25):
     """
