@@ -527,23 +527,40 @@ class LondonHospitalSimulation:
         # Add random variation
         random_factor = np.random.normal(1.0, 0.025, len(performance))
         performance = performance * random_factor
-        
-        # Ensure within realistic bounds for London
+        # Modified clipping ranges to create bimodal distribution
         if hospital_type == "Type 1":
-            # London Type 1 performance from NHS stats
+            # London Type 1 performance - adjusted ranges
             if month == 10:
-                return np.clip(performance, 0.43, 0.65)
+                return np.clip(performance, 0.40, 0.68)  # Wider range
             elif month == 11:
-                return np.clip(performance, 0.42, 0.64)
+                return np.clip(performance, 0.39, 0.67)  # Wider range
             else:  # December
-                return np.clip(performance, 0.40, 0.62)
+                return np.clip(performance, 0.37, 0.65)  # Wider range
         elif hospital_type == "Type 2":
-            return np.clip(performance, 0.75, 0.94)
+            # Adjusted to create higher performance cluster
+            return np.clip(performance, 0.75, 0.96)
         else:  # Type 3
+            # Enhanced Type 3 performance
             if month == 12:
-                return np.clip(performance, 0.93, 0.98)
+                return np.clip(performance, 0.92, 0.99)
             else:
-                return np.clip(performance, 0.94, 0.99)
+                return np.clip(performance, 0.93, 0.99)
+        # # Ensure within realistic bounds for London
+        # if hospital_type == "Type 1":
+        #     # London Type 1 performance from NHS stats
+        #     if month == 10:
+        #         return np.clip(performance, 0.43, 0.65)
+        #     elif month == 11:
+        #         return np.clip(performance, 0.42, 0.64)
+        #     else:  # December
+        #         return np.clip(performance, 0.40, 0.62)
+        # elif hospital_type == "Type 2":
+        #     return np.clip(performance, 0.75, 0.94)
+        # else:  # Type 3
+        #     if month == 12:
+        #         return np.clip(performance, 0.93, 0.98)
+        #     else:
+        #         return np.clip(performance, 0.94, 0.99)
 
     def calculate_waiting_times(self, performance, occupancy, staff_levels, severity, timestamps, hospital_type):
         """Calculate waiting times with London-specific patterns"""

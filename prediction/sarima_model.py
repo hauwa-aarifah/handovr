@@ -702,7 +702,7 @@ def main():
             
             # Plot forecast
             fig = predictor.plot_forecast(hospital_id, forecast)
-            fig_path = f"figures/{hospital_id.replace(' ', '_')}_forecast.png"
+            fig_path = f"figures/sarima/{hospital_id.replace(' ', '_')}_forecast.png"
             fig.savefig(fig_path)
             print(f"\nForecast plot saved to {fig_path}")
             
