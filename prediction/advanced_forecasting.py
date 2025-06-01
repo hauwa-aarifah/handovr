@@ -20,7 +20,7 @@ import gc  # For garbage collection
 warnings.filterwarnings("ignore")
 
 # Import base forecasting class
-from benchmark_models import ForecastingModels
+from .benchmark_models import ForecastingModels
 
 # def main():
 #     """Run benchmark forecasting models first"""
