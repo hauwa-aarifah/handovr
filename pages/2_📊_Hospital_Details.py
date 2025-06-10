@@ -22,7 +22,8 @@ try:
 except ImportError:
     FORECASTING_AVAILABLE = False
 
-st.set_page_config(page_title="Hospital Details - Handovr", page_icon="🏥", layout="wide")
+# Change icon to 📊 to differentiate from dashboard
+st.set_page_config(page_title="Hospital Details - Handovr", page_icon="📊", layout="wide")
 
 # Load data
 @st.cache_data
@@ -120,26 +121,39 @@ admissions_col = find_column(hospital_data, [
     'total_admissions', 'Admissions', 'daily_admissions'
 ])
 
-# Get selected hospital
-hospital_list = hospital_data[hospital_id_col].unique() if hospital_id_col else []
+# Get selected hospital - FIXED
+hospital_list = list(hospital_data[hospital_id_col].unique()) if hospital_id_col else []
 
+# Initialize selected_hospital if not set
 if 'selected_hospital' not in st.session_state:
-    if hospital_list:
-        selected_hospital = st.selectbox("Select a Hospital", hospital_list)
+    if len(hospital_list) > 0:
+        # Set the first hospital as default
+        st.session_state.selected_hospital = hospital_list[0]
     else:
         st.error("No hospitals found in the dataset")
         st.stop()
-else:
-    selected_hospital = st.session_state.selected_hospital
-    st.title(f"🏥 {selected_hospital}")
+
+# Get the current selected hospital
+selected_hospital = st.session_state.selected_hospital
+
+# Display title and hospital selector
+st.title(f"📊 {selected_hospital}")
+
+# Add option to change hospital
+with st.expander("Change Hospital"):
+    try:
+        current_index = hospital_list.index(selected_hospital)
+    except ValueError:
+        # If selected hospital not in list, use first hospital
+        current_index = 0
+        st.session_state.selected_hospital = hospital_list[0]
+        selected_hospital = hospital_list[0]
     
-    # Add option to change hospital
-    with st.expander("Change Hospital"):
-        new_selection = st.selectbox("Select a Hospital", hospital_list, 
-                                   index=list(hospital_list).index(selected_hospital))
-        if new_selection != selected_hospital:
-            st.session_state.selected_hospital = new_selection
-            st.rerun()
+    new_selection = st.selectbox("Select a Hospital", hospital_list, 
+                               index=current_index)
+    if new_selection != selected_hospital:
+        st.session_state.selected_hospital = new_selection
+        st.rerun()
 
 # Get hospital data
 hospital_df = hospital_data[hospital_data[hospital_id_col] == selected_hospital]
@@ -488,28 +502,95 @@ if available_tabs:
             st.plotly_chart(fig, use_container_width=True)
             
             # Add forecast controls
+            
+            # Add forecast controls
             with st.expander("Forecast Options"):
-                col1, col2 = st.columns(2)
+                st.markdown("### Available Forecasting Models")
+                
+                col1, col2, col3 = st.columns(3)
+                
                 with col1:
-                    if st.button("Run SARIMA Forecast"):
+                    st.markdown("**📊 Benchmark Models**")
+                    st.caption("Basic models including persistence, hourly patterns, and weekly patterns. Required for ensemble forecasting.")
+                    if st.button("Run Benchmark Models", use_container_width=True):
+                        if FORECASTING_AVAILABLE and 'forecaster' in st.session_state:
+                            with st.spinner("Running benchmark models (this may take a minute)..."):
+                                try:
+                                    forecaster = st.session_state.forecaster
+                                    # Run all benchmark models for this hospital
+                                    forecaster.persistence_forecast(selected_hospital)
+                                    forecaster.climatology_forecast(selected_hospital, method='hour_of_day')
+                                    forecaster.climatology_forecast(selected_hospital, method='hour_of_week')
+                                    forecaster.sarima_forecast(selected_hospital)
+                                    
+                                    # Save results
+                                    forecaster.save_results(output_dir="results", filename="forecast_results.pkl")
+                                    st.success("Benchmark models completed!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Benchmark models failed: {str(e)}")
+                        else:
+                            st.warning("Forecasting not available")
+                
+                with col2:
+                    st.markdown("**📈 SARIMA Model**")
+                    st.caption("Advanced time series model that captures trends, seasonality, and autocorrelations in the data.")
+                    if st.button("Run SARIMA Forecast", use_container_width=True):
                         if FORECASTING_AVAILABLE and 'forecaster' in st.session_state:
                             with st.spinner("Running SARIMA model..."):
                                 try:
+                                    forecaster = st.session_state.forecaster
                                     forecaster.sarima_forecast(selected_hospital)
                                     st.success("SARIMA forecast generated!")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"SARIMA failed: {str(e)}")
-                with col2:
-                    if st.button("Run Ensemble Forecast"):
+                
+                with col3:
+                    st.markdown("**🎯 Ensemble Forecast**")
+                    st.caption("Combines multiple models for improved accuracy. Weighs each model based on historical performance.")
+                    if st.button("Run Ensemble Forecast", use_container_width=True):
                         if FORECASTING_AVAILABLE and 'forecaster' in st.session_state:
                             with st.spinner("Running ensemble model..."):
                                 try:
+                                    forecaster = st.session_state.forecaster
+                                    # Check if benchmark models exist
+                                    if f"{selected_hospital}_persistence" not in forecaster.results:
+                                        st.warning("Running benchmark models first...")
+                                        # Run benchmark models
+                                        forecaster.persistence_forecast(selected_hospital)
+                                        forecaster.climatology_forecast(selected_hospital, method='hour_of_day')
+                                        forecaster.climatology_forecast(selected_hospital, method='hour_of_week')
+                                        if f"{selected_hospital}_sarima" not in forecaster.results:
+                                            forecaster.sarima_forecast(selected_hospital)
+                                    
+                                    # Now run ensemble
                                     forecaster.ensemble_forecast(selected_hospital)
                                     st.success("Ensemble forecast generated!")
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Ensemble failed: {str(e)}")
+                
+            # Add information about models
+            with st.expander("ℹ️ About the Forecasting Models"):
+                st.markdown("""
+                **Benchmark Models:**
+                - **Persistence**: Uses the most recent value as the forecast
+                - **Hourly Climatology**: Uses average patterns by hour of day
+                - **Weekly Climatology**: Uses average patterns by day of week and hour
+                
+                **SARIMA (Seasonal ARIMA):**
+                - Captures complex patterns including trends and multiple seasonalities
+                - Uses historical data to predict future values
+                - Best for capturing both short-term and long-term patterns
+                
+                **Ensemble Model:**
+                - Combines predictions from all models using weighted averaging
+                - Weights: SARIMA (60%), Hourly Climatology (25%), Weekly Climatology (15%)
+                - Generally provides the most accurate and robust predictions
+                
+                💡 **Tip**: For best results, run Benchmark Models first, then try the Ensemble forecast.
+                """)
         else:
             st.info("No data available for the selected time range")
     

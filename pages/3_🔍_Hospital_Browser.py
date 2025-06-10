@@ -144,7 +144,7 @@ elif view_type == "Cards":
                     
                     if st.button("View Details", key=f"view_{hospital['Hospital_ID']}"):
                         st.session_state.selected_hospital = hospital['Hospital_ID']
-                        st.switch_page("pages/2_🏥_Hospital_Details.py")
+                        st.switch_page("pages/2_📊_Hospital_Details.py")
 
 else:  # Map view
     # Create scatter mapbox

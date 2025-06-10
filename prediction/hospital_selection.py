@@ -11,6 +11,9 @@ import pandas as pd
 from geopy.distance import geodesic
 import logging
 from typing import Dict, List, Tuple, Optional, Union
+import googlemaps
+from datetime import datetime
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +31,8 @@ class HospitalSelector:
     def __init__(self, 
                 hospital_data: pd.DataFrame, 
                 hospital_locations: pd.DataFrame,
-                prediction_model=None):
+                prediction_model=None,
+                google_maps_api_key=None):
         """
         Initialize the hospital selection algorithm
         
@@ -40,10 +44,32 @@ class HospitalSelector:
             Geographic coordinates and capabilities of hospitals
         prediction_model : object, optional
             Model for predicting future congestion (if not already in hospital_data)
+        google_maps_api_key : str, optional
+            Google Maps API key for real-time traffic data
         """
         self.hospital_data = hospital_data
         self.hospital_locations = hospital_locations
         self.prediction_model = prediction_model
+        
+        # Initialize Google Maps client
+        self.gmaps = None
+        if google_maps_api_key:
+            try:
+                self.gmaps = googlemaps.Client(key=google_maps_api_key)
+                logger.info("Google Maps API initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Google Maps API: {e}")
+                self.gmaps = None
+        else:
+            # Try to get from environment variable
+            api_key = os.environ.get('GOOGLE_MAPS_API_KEY')
+            if api_key:
+                try:
+                    self.gmaps = googlemaps.Client(key=api_key)
+                    logger.info("Google Maps API initialized from environment variable")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize Google Maps API: {e}")
+                    self.gmaps = None
         
         # Merge hospital data with location data
         self._merge_hospital_data()
@@ -60,10 +86,10 @@ class HospitalSelector:
         self.severity_weights = {
             # Low severity (1-3)
             'low': {
-                'congestion': 0.45,  # Congestion matters more for low severity
-                'travel_time': 0.25,
+                'congestion': 0.50,  # Congestion matters most for low severity
+                'travel_time': 0.15,  # Reduced to de-prioritize proximity
                 'capability_match': 0.20,
-                'handover_delay': 0.10
+                'handover_delay': 0.15
             },
             # Medium severity (4-6)
             'medium': {
@@ -189,7 +215,8 @@ class HospitalSelector:
         
         return latest_data
     
-    def calculate_travel_time(self, origin_coords, dest_coords, avg_speed_kph=40):
+    def calculate_travel_time(self, origin_coords, dest_coords, avg_speed_kph=40,
+                             departure_time=None, traffic_model='pessimistic'):
         """
         Calculate estimated travel time between two coordinates
         
@@ -200,20 +227,88 @@ class HospitalSelector:
         dest_coords : tuple
             (latitude, longitude) of destination
         avg_speed_kph : float, optional
-            Average travel speed in km/h
+            Average travel speed in km/h (used as fallback)
+        departure_time : datetime, optional
+            When the ambulance will depart (default: now)
+        traffic_model : str, optional
+            'best_guess', 'pessimistic', or 'optimistic'
             
         Returns:
         --------
         float
             Estimated travel time in minutes
         """
+        # Try Google Maps API first if available
+        if self.gmaps:
+            try:
+                # CRITICAL FIX: Always use current time or future time for Google Maps API
+                # The API doesn't support historical traffic data
+                current_time = datetime.now()
+                
+                # If departure_time is provided and it's in the past, use current time
+                if departure_time is None or departure_time < current_time:
+                    api_departure_time = current_time
+                    logger.debug(f"Using current time for API call: {api_departure_time}")
+                else:
+                    api_departure_time = departure_time
+                    logger.debug(f"Using future departure time for API call: {api_departure_time}")
+                
+                # Get directions with traffic
+                directions_result = self.gmaps.directions(
+                    origin=origin_coords,
+                    destination=dest_coords,
+                    mode="driving",
+                    departure_time=api_departure_time,  # Use the adjusted time
+                    traffic_model=traffic_model,
+                    units="metric"
+                )
+                
+                if directions_result:
+                    # Extract duration in traffic
+                    leg = directions_result[0]['legs'][0]
+                    
+                    # Try to get duration_in_traffic first, fallback to duration
+                    if 'duration_in_traffic' in leg:
+                        duration_seconds = leg['duration_in_traffic']['value']
+                    else:
+                        duration_seconds = leg['duration']['value']
+                    
+                    travel_time_minutes = duration_seconds / 60
+                    
+                    # Log the distance for comparison
+                    distance_meters = leg['distance']['value']
+                    logger.debug(f"Google Maps: {distance_meters/1000:.1f}km, {travel_time_minutes:.1f} min with traffic")
+                    
+                    # Add small buffer for ambulance maneuvering (5%)
+                    return travel_time_minutes * 1.05
+                    
+            except Exception as e:
+                logger.warning(f"Google Maps API error: {e}. Falling back to geodesic calculation.")
+        
+        # Fallback to geodesic calculation
+        logger.debug("Using geodesic distance calculation")
+        
         # Calculate distance in kilometers
         distance_km = geodesic(origin_coords, dest_coords).kilometers
         
-        # Calculate time in minutes based on average speed
-        travel_time_minutes = (distance_km / avg_speed_kph) * 60
+        # Adjust speed based on time of day if no API
+        if departure_time is None:
+            departure_time = datetime.now()
+            
+        hour = departure_time.hour
         
-        # Add a small buffer for variability
+        # Adjust average speed based on typical London traffic patterns
+        if 7 <= hour <= 9 or 17 <= hour <= 19:  # Rush hours
+            adjusted_speed = avg_speed_kph * 0.7  # 30% slower
+        elif 22 <= hour or hour <= 6:  # Night time
+            adjusted_speed = avg_speed_kph * 1.3  # 30% faster
+        else:  # Normal hours
+            adjusted_speed = avg_speed_kph
+        
+        # Calculate time in minutes
+        travel_time_minutes = (distance_km / adjusted_speed) * 60
+        
+        # Add buffer for variability
         buffer = travel_time_minutes * 0.1  # 10% buffer
         
         return travel_time_minutes + buffer
@@ -476,7 +571,8 @@ class HospitalSelector:
                                custom_weights=None,
                                prediction_hours=2,
                                travel_speed=40,
-                               max_hospitals=5):
+                               max_hospitals=5,
+                               use_real_time_traffic=True):
         """
         Select the optimal hospital based on all criteria
         
@@ -498,6 +594,8 @@ class HospitalSelector:
             Average travel speed in km/h
         max_hospitals : int, optional
             Maximum number of hospitals to return
+        use_real_time_traffic : bool, optional
+            Whether to use real-time traffic data if available
             
         Returns:
         --------
@@ -517,19 +615,52 @@ class HospitalSelector:
         # Calculate travel times
         travel_times = []
         
+        # Determine if we should use real-time traffic
+        use_traffic = use_real_time_traffic and self.gmaps is not None
+        
         for _, hospital in hospital_data.iterrows():
             hospital_coords = (hospital['Latitude'], hospital['Longitude'])
+            
+            # CRITICAL: For real-time traffic, always use current time
+            # The historical timestamp is only for hospital metrics, not traffic
+            if use_traffic:
+                # Use current time for traffic API
+                departure_time = datetime.now()
+            else:
+                # For fallback calculation, can use the provided timestamp
+                departure_time = timestamp
+            
             travel_time = self.calculate_travel_time(
                 incident_location, 
                 hospital_coords, 
-                avg_speed_kph=travel_speed
+                avg_speed_kph=travel_speed,
+                departure_time=departure_time,
+                traffic_model='pessimistic'  # Be conservative for emergency planning
             )
             travel_times.append(travel_time)
             
         hospital_data['Travel_Time_Minutes'] = travel_times
         
-        # Normalize travel times
-        travel_time_norm = self.normalize_scores(hospital_data['Travel_Time_Minutes'].values, lower_is_better=True)
+        # Normalize travel times with severity adjustment
+        if patient_severity <= 3:  # Low severity
+            # Apply logarithmic scaling to reduce travel time differences
+            travel_times = hospital_data['Travel_Time_Minutes'].values
+            adjusted_times = np.log1p(travel_times / 10) * 10
+            
+            # Normalize with compressed range (0.3 to 1.0)
+            min_val = adjusted_times.min()
+            max_val = adjusted_times.max()
+            
+            if max_val - min_val > 0:
+                normalized = (adjusted_times - min_val) / (max_val - min_val)
+                # Compress range and invert (lower is better)
+                travel_time_norm = 1 - (normalized * 0.7)  # Results in 0.3 to 1.0 range
+            else:
+                travel_time_norm = np.ones_like(adjusted_times)
+        else:
+            # Use standard normalization for medium/high severity
+            travel_time_norm = self.normalize_scores(hospital_data['Travel_Time_Minutes'].values, lower_is_better=True)
+            
         hospital_data['Travel_Time_Norm'] = travel_time_norm
         
         # Calculate capability match
@@ -661,6 +792,10 @@ class HospitalSelector:
             f"Estimated travel time: {top_hospital['Travel_Time_Minutes']:.1f} minutes.",
             f"Current occupancy: {top_hospital['A&E_Bed_Occupancy']*100:.1f}%."
         ]
+        
+        # Add traffic info if Google Maps was used
+        if self.gmaps:
+            explanation.append("Travel time includes real-time traffic conditions.")
         
         # Add reasons based on incident type and severity
         if severity >= 7:
